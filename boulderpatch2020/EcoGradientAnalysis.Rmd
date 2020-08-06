@@ -1,0 +1,743 @@
+---
+title: "EcoGradientAnalysis"
+author: "Christina Bonsell"
+date: "June 8, 2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(lubridate)
+library(sjPlot)
+library(corrplot)
+library(cowplot)
+library(car)
+library(vegan)
+```
+Load data
+
+```{r}
+#Abiotic timeseries
+
+source("/CreateDailyTimeseries.Rmd")
+
+#timeseries <- read_csv("data/AllEnvDaily_QAQC.csv", col_types = "cDdddddc")
+
+attr(timeseries, 'spec') <- NULL
+
+#remove temps from tiltmeters that have sensors >50cm above benthos
+timeseries$mTemp[timeseries$Site=="W3"&between(timeseries$Day,as.Date("2014-08-23"),as.Date("2015-07-29"))]<-NA
+
+#Benthic community normalized to percent rock cover
+commFG <- read_csv("repository data/PercentCov.csv") #doi:10.18739/A2Q814T07
+
+#Settlement tiles by functional groups
+tilesFG <- read_csv("repository data/SettlementTilesNormalized.csv") #doi:10.18739/A2Q814T07
+```
+
+
+#Abiotic env: means per season
+##Table 2
+```{r}
+envtab<-timeseries%>%group_by(Site,Season)%>%
+  summarise(Temp=mean(mTemp,na.rm=T),sdTemp=sd(mTemp,na.rm=T), mnT=min(mTemp,na.rm=T), mxT=max(mTemp,na.rm=T), nT=sum(!is.na(mTemp)),
+            Sal=mean(mSal, na.rm=T),sdSal=sd(mSal, na.rm=T), mnS=min(mSal,na.rm=T), mxS=max(mSal,na.rm=T), nS=sum(!is.na(mSal)),
+            Curr=mean(m_Speed, na.rm=T),sdCurr=sd(m_Speed, na.rm=T), mnC=min(m_Speed,na.rm=T), mxC=max(m_Speed,na.rm=T), nC=sum(!is.na(m_Speed)),
+            PAR=mean(PAR_perday, na.rm=T),sdPAR=sd(PAR_perday, na.rm=T), mnP=min(PAR_perday,na.rm=T), mxP=max(PAR_perday,na.rm=T), nP=sum(!is.na(PAR_perday)))%>% 
+  mutate_at(c("Temp","sdTemp", "mnT", "mxT", "nT", "PAR", "sdPAR", "mnP", "mxP", "nP", "nS"), round, 1)%>%
+  mutate_at(c( "Sal", "sdSal", "mnS", "mxS", "Curr", "sdCurr", "mnC",  "mxC"), round, 0)%>%
+  ungroup() %>% 
+  mutate(Site=factor(Site, levels = c("E1","W1","L1","W3","DS11"))) %>% 
+  arrange(Site,Season)
+envtab
+
+table2 <- envtab %>%
+  mutate(Temperature=paste(Temp,"±", sdTemp, " (", mnT,"-", mxT, ")",nT, sep=""),
+         Salinity=paste(Sal,"±", sdSal, " (", mnS,"-", mxS, ")",nS, sep=""),
+         PAR=paste(PAR,"±", sdPAR, " (", mnP,"-", mxP, ")",nP, sep=""),
+         'Current velocity'=paste(Curr,"±", sdCurr, " (", mnC,"-", mxC, ")",nC, sep="")) %>% 
+  select(Site, Season, Temperature, Salinity, PAR, 'Current velocity')
+tab_df(table2,file="env_summary.doc")
+
+```
+#Mean daily temp per site 
+##Table 6
+
+```{r}
+timeseries %>% 
+  group_by(Site) %>% 
+  summarize(m=mean(mTemp, na.rm=T))
+```
+
+
+#Environment over time
+
+prepare data for plotting
+```{r}
+t_w<-timeseries%>% filter(!is.na(mTemp)) %>% 
+  select(Site, Day, mTemp)%>%
+  pivot_wider(names_from=Site,values_from=mTemp)
+
+s_w<-timeseries%>%filter(!is.na(mSal)) %>% 
+  select(Site, Day, mSal)%>%
+  spread(Site,mSal)
+
+PAR_w<-timeseries%>%filter(!is.na(PAR_perday)) %>% 
+  select(Day,Site,PAR_perday)%>%
+  spread(Site,PAR_perday)
+
+curr_w<-timeseries%>%filter(!is.na(m_Speed)) %>% 
+  select(Day,Site,m_Speed)%>%
+  spread(Site,m_Speed)
+```
+
+
+prep plots for fig 2
+```{r}
+Palette2 <- c("DS11"="#F93E58", "E1"="#9440D5", "L1"="#Fc8d59","W1"="#7CB02C", "W3"="#408AD2")
+
+tplot<-ggplot(t_w,aes(Day,DS11))+
+  geom_line(aes(color="DS11"), size=1,alpha=.7)+
+  geom_line(aes(Day, E1,color="E1"), size=1, alpha=.7)+
+  geom_line(aes(Day, L1,color="L1"), size=1, alpha=.7)+
+  geom_line(aes(Day, W1,color="W1"), size=1, alpha=.7)+
+  geom_line(aes(Day, W3,color="W3"), size=1, alpha=.7)+
+  ylab(expression("Temperature " (degree~C)))+
+  theme_cowplot(font_size = 12)+
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank())+
+  scale_x_date(date_breaks = "4 months", date_labels = "%b%Y",limits=c(min(t_w$Day),max(t_w$Day)))+
+  scale_colour_manual(name = 'Site',
+                      values=Palette2)
+
+splot<-ggplot(s_w,aes(Day,DS11))+
+  geom_line(aes(color="DS11"), size=1,alpha=.7)+
+  geom_line(aes(Day, E1,color="E1"), size=1, alpha=.7)+
+  geom_line(aes(Day, L1,color="L1"), size=1, alpha=.7)+
+  geom_line(aes(Day, W1,color="W1"), size=1, alpha=.7)+
+  geom_line(aes(Day, W3,color="W3"), size=1, alpha=.7)+
+  ylab("Salinity")+
+  theme_cowplot(font_size = 12)+
+  theme(axis.title.x=element_blank())+
+  scale_x_date(date_breaks = "4 months", date_labels = "%b%Y",limits=c(min(t_w$Day),max(t_w$Day)))+
+  theme(axis.title.x=element_blank(),axis.text.x=element_blank())+
+  scale_colour_manual(name = 'Site',
+                      values=Palette2)
+
+PARplot<-ggplot(PAR_w,aes(Day,DS11))+
+  geom_line(aes(color="DS11"), size=1,alpha=.7)+
+  geom_line(aes(Day, E1,color="E1"), size=1, alpha=.7)+
+  geom_line(aes(Day, L1,color="L1"), size=1, alpha=.7)+
+  geom_line(aes(Day, W1,color="W1"), size=1, alpha=.7)+
+  geom_line(aes(Day, W3,color="W3"), size=1, alpha=.7)+
+  ylab(expression("(mol photons "~ m^{-2}~ day^{-1}~")"))+
+  scale_x_date(date_breaks = "4 months",limits=c(min(t_w$Day),max(t_w$Day)))+
+  theme_cowplot(font_size = 12)+
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank())+
+  scale_colour_manual(name = 'Site', 
+                      values=Palette2)
+
+Currplot<-ggplot(curr_w,aes(Day,DS11))+
+  geom_line(aes(color="DS11"), size=1,alpha=.7)+
+  geom_line(aes(Day, E1,color="E1"), size=1, alpha=.7)+
+  geom_line(aes(Day, L1,color="L1"), size=1, alpha=.7)+
+  geom_line(aes(Day, W1,color="W1"), size=1, alpha=.7)+
+  geom_line(aes(Day, W3,color="W3"), size=1, alpha=.7)+
+  ylab(expression("Temperature " (degree~C)))+
+  theme_cowplot(font_size = 12)+
+  ylab(expression(paste("Velocity (cm ",s^{-1},")")))+
+  scale_x_date(date_breaks = "4 months", date_labels = "%b%Y",limits=c(min(t_w$Day),max(t_w$Day)))+
+  theme(axis.title.x=element_blank(),axis.text.x=element_text(size=11, angle=70, hjust=1))+
+  scale_colour_manual(name = 'Site', 
+                      values=Palette2)
+```
+
+##plot fig 2
+
+```{r}
+fig2 <- plot_grid(tplot,splot,PARplot,Currplot,nrow=4,align="v", rel_heights=c(1,1,1,1.3))#will take a min
+
+#ggsave("timeseries.png", fig2, device=png(),width=175, height=185, units="mm",scale=1.2,dpi=300)
+```
+
+# Benthic community summary
+
+```{r}
+bio<-commFG%>%
+  select(-Year,-quad) %>% 
+  mutate('Bare Rock'=100-(CCA+`Red algae`+Kelp+Filter+Suspension)) %>% 
+  pivot_longer(-Site, names_to="Fxnl.Group",values_to = "PC")%>%
+  mutate(Site=factor(Site, levels = c("E1","W1","L1","W3","DS11")),
+         Fxnl.Group=factor(Fxnl.Group, levels = c("CCA","Red algae","Kelp","Filter","Suspension", "Bare Rock"))) %>% 
+  group_by(Site,Fxnl.Group)%>%
+  summarize(mPC=mean(PC), sdPC=sd(PC)) %>% ungroup()
+```
+
+## Table 3
+
+```{r}
+table3<- bio %>% 
+  mutate_if(is.numeric, round, 0)%>%
+  mutate(PC=paste(mPC,"±", sdPC,sep="")) %>% 
+  select(-mPC, -sdPC) %>% 
+  pivot_wider(names_from = Fxnl.Group, values_from = PC) %>% 
+  arrange(Site)
+
+#tab_df(table3,file="community_summary.doc")
+```
+
+##Are sites significantly different?
+
+prep
+```{r}
+sqrt.transform <- function(x){sqrt(x)/100}
+
+sqrt.norm.comm <- commFG %>% 
+  mutate_at(c("CCA","Filter","Kelp","Red algae","Suspension"), sqrt.transform)
+sqrt.norm.comm$Site <- as.factor(sqrt.norm.comm$Site)
+sqrt.norm.comm$Year <- as.factor(sqrt.norm.comm$Year)
+```
+
+Stats
+
+To determine differences in established benthic communities among sites, a Bray-Curtis matrix was calculated from square-root transformed percent cover data, then analyzed statistically using PERMANOVA as well as visually using a non-metric multidimensional scaling plot. Square-root transformation decreased the number of pairwise differences in homogeneity, but the transformation did not change PERMANOVA results. 
+
+
+```{r}
+#Homogenity of comms####
+#sqrt transformed data has more pairwise homogeneity so use for adonis
+
+#raw
+grp.dis <- vegdist(commFG[,c(4:8)])#dissimilarity matrix
+
+dis<-with(commFG, betadisper(grp.dis, Site))
+dis
+anova(dis)###is one site more variable than the others?yes
+plot(dis)
+boxplot(dis)#W1 is most variable
+
+#sqrt transform
+grp.dis <- vegdist(sqrt.norm.comm[,c(4:8)])#dissimilarity matrix
+
+dis<-with(commFG, betadisper(grp.dis, Site))
+dis
+anova(dis)###is one site more variable than the others?yes
+plot(dis)
+boxplot(dis)#W1 is most variable
+TH<-TukeyHSD(dis)
+plot(TH)
+TH#E1 diff from DS11, W1 diff from E1, W1 diff from W3
+
+
+##Permanova comm vs site#### 
+Perm_raw<-adonis(commFG[,c(4:8)]~Site, commFG, perm=200)
+Perm_raw##sig (both transformed and non transformed are sig) NOT REPORTED
+
+Perm_sqrt<-adonis(sqrt.norm.comm[,c(4:8)]~Site, commFG, perm=200)
+Perm_sqrt##sig (both transformed and non transformed are sig) REPORTED
+
+```
+
+##Supp table 3: Pairwise post hoc differences in benthic community structure
+
+```{r}
+a<-sqrt.norm.comm  %>% filter(Site=="DS11"|Site=="E1") %>% adonis(.[,c(4:8)]~Site, ., perm=200)
+b<-sqrt.norm.comm  %>% filter(Site=="DS11"|Site=="W1") %>% adonis(.[,c(4:8)]~Site, ., perm=200)
+c<-sqrt.norm.comm  %>% filter(Site=="DS11"|Site=="W3") %>% adonis(.[,c(4:8)]~Site, ., perm=200)
+d<-sqrt.norm.comm  %>% filter(Site=="E1"|Site=="W1") %>% adonis(.[,c(4:8)]~Site, ., perm=200)
+e<-sqrt.norm.comm  %>% filter(Site=="E1"|Site=="W3") %>% adonis(.[,c(4:8)]~Site, ., perm=200)
+f<-sqrt.norm.comm  %>% filter(Site=="W1"|Site=="W3") %>% adonis(.[,c(4:8)]~Site, ., perm=200)
+g<-sqrt.norm.comm  %>% filter(Site=="L1"|Site=="W3") %>% adonis(.[,c(4:8)]~Site, ., perm=200)
+h<-sqrt.norm.comm  %>% filter(Site=="L1"|Site=="W1") %>% adonis(.[,c(4:8)]~Site, ., perm=200)
+i<-sqrt.norm.comm  %>% filter(Site=="L1"|Site=="E1") %>% adonis(.[,c(4:8)]~Site, ., perm=200)###NOT SIG DIFF
+j<-sqrt.norm.comm  %>% filter(Site=="L1"|Site=="DS11") %>% adonis(.[,c(4:8)]~Site, ., perm=200)
+SuppTable3<-list(a,b,c,d,e,f,g,h,i,j)
+
+```
+
+Photoquadrats taken over two consecutive years at E1 and W1 revealed that community structure did not vary by year (PERMANOVA, p>0.05)
+
+```{r}
+sqrt.norm.comm  %>% filter(Site=="E1"& Year=="2016"|Site=="E1"& Year=="2017") %>% 
+  adonis(.[,c(4:8)]~Year, ., perm=200)#not sig diff
+sqrt.norm.comm  %>% filter(Site=="W1"& Year=="2016"|Site=="W1"& Year=="2017") %>% 
+  adonis(.[,c(4:8)]~Year, ., perm=200)#not sig diff
+
+```
+
+
+##Fig 4
+
+```{r}
+Pal<-c("#F93E58", "#9440D5", "#Fc8d59","#7CB02C", "#408AD2")
+#by fxnl groups
+sqcomm_NMDS=metaMDS(sqrt.norm.comm[4:8],trymax=100)
+sqcomm_NMDS### BC matrix, sqrt transform on  functional groups
+stressplot(sqcomm_NMDS)
+
+table(sqrt.norm.comm$Site)
+
+#mean community for plotting
+NMDS <-  data.frame(MDS1 = sqcomm_NMDS$points[,1], MDS2 = sqcomm_NMDS$points[,2],group=sqrt.norm.comm$Site)
+NMDS.mean <- aggregate(NMDS[,1:2],list(group=NMDS$group),mean)
+
+png("benthosNMDS.png", width=5, height=5, units="in", res=300) 
+ordiplot(sqcomm_NMDS,type="n")
+orditorp(sqcomm_NMDS,display="sites",label="n",pch="+",
+         col=c(rep(Pal[1],31), rep(Pal[2],36), rep(Pal[3],24), rep(Pal[4],43), rep(Pal[5],35)),
+         cex=.5,air=0.01)
+ordiellipse(sqcomm_NMDS,groups=commFG$Site,draw="polygon",col=Pal,label=F, kind="sd", lwd=0.1)
+orditorp(sqcomm_NMDS,display="species",col="black",air=0.01)
+points(NMDS.mean$MDS1, NMDS.mean$MDS2, col=Pal)
+legend("topright", legend = c("DS11","E1","L1","W1","W3"), pch = "+",col = Pal, bty="n")
+dev.off()
+
+```
+
+
+#Benthos vs environment (Summer) correlations
+
+```{r}
+
+env <- envtab %>% 
+  filter(Season=="Summer") %>% 
+  select(-Season) %>% 
+  select(Site,Temp, Sal, Curr, PAR)
+
+siteinfo <- data.frame(Site=c("E1", "W1", "L1", "W3", "DS11"),
+                       rivdist_km=c(3.54,6.82,7.20,7.31,9.03),
+                       depth=c(4.4,6.0,5.5,6.6,6.1))
+#river dist from Arc GIS (linear dist to land associated w nearest channel)
+
+env.bio<-env%>%
+  full_join((siteinfo)) %>% 
+  pivot_longer(-Site, names_to="Env",values_to = "env.val")%>%
+  full_join(bio, by="Site")
+
+env.bio_w<-bio%>%
+  select(-sdPC) %>% 
+  filter(Fxnl.Group!="Bare Rock") %>% 
+  spread(Fxnl.Group,mPC)%>%
+  full_join(env, by="Site")%>%
+  ungroup%>%
+  full_join((siteinfo)) %>%
+  #mutate(rivdist_km=c(3.54,6.82,7.20,7.31,9.03),depth=c(4.4,6.0,5.5,6.6,6.1))%>%
+  dplyr::select(Site,`Red algae`,Kelp, CCA, Filter, Suspension, 
+         rivdist_km,depth,
+         "Temperature"=Temp, 
+         "Salinity"=Sal, 
+         "PAR"=PAR, 
+         "Current Vel."=Curr)
+```
+
+```{r}
+##Correlations
+#fuction for genetating pvals from corralation matrix
+# mat : is a matrix of data
+# ... : further arguments to pass to the native R cor.test function
+cor.mtest <- function(mat, ...) {
+  mat <- as.matrix(mat)
+  n <- ncol(mat)
+  p.mat<- matrix(NA, n, n)
+  diag(p.mat) <- 0
+  for (i in 1:(n - 1)) {
+    for (j in (i + 1):n) {
+      tmp <- cor.test(mat[, i], mat[, j], method="spearman",...)
+      p.mat[i, j] <- p.mat[j, i] <- tmp$p.value
+    }
+  }
+  colnames(p.mat) <- rownames(p.mat) <- colnames(mat)
+  p.mat
+}
+```
+
+```{r}
+C<-env.bio_w %>%
+  dplyr::select(-Site) %>% 
+  cor(method="spearman")#spearman rank correlations
+
+Pmat<-env.bio_w %>%
+  dplyr::select(-Site) %>% 
+  cor.mtest()
+  
+corrplot(C,type="upper",p.mat=Pmat,sig.level = 0.05, insig = "p-value") #gives pvals for correllations
+```
+
+##Figure 6
+
+```{r}
+png("corrplot.png")
+corrplot(C, method="color",type="full",
+         addCoef.col = "black", # Add coefficient of correlation
+         tl.col="black", tl.srt=45, 
+         diag=F)#Text label color and rotation)
+dev.off()
+
+
+fig6b <- env.bio%>%filter(Env=="rivdist_km",Fxnl.Group=="CCA")%>%
+  ggplot(aes(env.val,mPC))+
+  geom_point()+
+  geom_text(aes(label=Site), size=3.5, 
+            nudge_y = 1.6,
+            nudge_x = c(-0.2,0,-0.2,-0.2,-0.1))+
+  ylab("Mean % CCA")+
+  xlab("Dist. to input (km)")+
+  theme_cowplot()
+
+
+ggsave("CCAfig.png", fig6b, device=png(),width=3, height=2, scale=1,dpi=300)
+
+```
+#Tile abundances
+
+##ave total abundance per 100 cm2
+```{r}
+tiles_long <- tilesFG %>% pivot_longer(c(6:10), names_to = "Taxa", values_to = "count")
+
+ST_abuns<-tiles_long%>%group_by(tile,Site, Years_out)%>%
+  summarize(total=sum(count), num=n())%>%
+  ungroup()
+ST_abuns$Years_out<-factor(ST_abuns$Years_out)
+
+```
+##Table 4
+
+```{r}
+ST_abuns %>% group_by(Site, Years_out) %>% 
+  summarize(mabun=mean(total,na.rm=T),sdabun=sd(total, na.rm=T),ntiles=n())
+```
+
+##Stats
+
+Differences in total abundance of biota on settlement tiles within sites and within deployment durations (1, 2, and 3 years) were assessed with Welsh one-way ANOVA, or Welsh two-sample t-test, depending on the number of groups. 
+
+```{r}
+#by site within years deployed
+leveneTest(total~Site, data=ST_abuns[ST_abuns$Years_out=="1",])# variance not homogenous
+oneway.test(total~Site, data=ST_abuns[ST_abuns$Years_out=="1",])#Welch one-way test -sig
+TukeyHSD(aov(total~Site, data=ST_abuns[ST_abuns$Years_out=="1",]))#DS11 has higher abundance than rest
+leveneTest(total~Site, data=ST_abuns[ST_abuns$Years_out=="2",])# variance not homogenous
+oneway.test(total~Site, data=ST_abuns[ST_abuns$Years_out=="2",])#Welch one-way test -sig
+TukeyHSD(aov(total~Site, data=ST_abuns[ST_abuns$Years_out=="2",]))#DS11 has most, W3 has second
+
+#by years out within site
+leveneTest(total~Years_out, data=ST_abuns[ST_abuns$Site=="E1",])# variance homogenous
+t.test(total~Years_out, data=ST_abuns[ST_abuns$Site=="E1",])#Welch 2 sample t test - not sig
+leveneTest(total~Years_out, data=ST_abuns[ST_abuns$Site=="DS11",])# variance not homogenous
+t.test(total~Years_out, data=ST_abuns[ST_abuns$Site=="DS11",])#Welch 2 sample t test - not sig
+leveneTest(total~Years_out, data=ST_abuns[ST_abuns$Site=="W1",])# variance homogenous
+oneway.test(total~Years_out, data=ST_abuns[ST_abuns$Site=="W1",])#Welch one-way test -sig
+TukeyHSD(aov(total~Years_out, data=ST_abuns[ST_abuns$Site=="W1",]))#3 has most
+leveneTest(total~Years_out, data=ST_abuns[ST_abuns$Site=="W3",])# variance homogenous
+t.test(total~Years_out, data=ST_abuns[ST_abuns$Site=="W3",])#Welch 2 sample t test - sig, 2 has more inds
+
+```
+
+#Tile community structure
+
+
+```{r}
+tilesFG$rs<-rowSums(tilesFG[6:10])
+tilesFG <- tilesFG%>%filter(rs>0)%>%dplyr::select(-Kelp)#we didn't see any kelp
+
+Ts.commdf<-sqrt(tilesFG[6:9])
+```
+
+##Stats
+
+Settlement tile communities varied by site and deployment time (PERMANOVA, p<0.05). 
+
+```{r}
+##Permanova comm vs site
+TGPerm<-adonis(Ts.commdf~tilesFG$Site, Ts.commdf, perm=200)
+TGPerm##sig (both transformed and non transformed are sig)
+
+##Permanova comm vs deployment time
+TGPerm<-adonis(Ts.commdf~tilesFG$Years_out, Ts.commdf, perm=200)
+TGPerm##sig (both transformed and non transformed are sig)
+
+
+##Pairwise PERMANOVAs between sites
+
+Tcommdf  %>% filter(Site=="DS11"|Site=="E1") %>% adonis(sqrt(.[,c(6:9)])~Site, ., perm=200)
+Tcommdf  %>% filter(Site=="DS11"|Site=="W1") %>% adonis(sqrt(.[,c(6:9)])~Site, ., perm=200)
+Tcommdf  %>% filter(Site=="E1"|Site=="W1") %>% adonis(sqrt(.[,c(6:9)])~Site, ., perm=200)
+Tcommdf  %>% filter(Site=="DS11"|Site=="W3") %>% adonis(sqrt(.[,c(6:9)])~Site, ., perm=200)
+Tcommdf  %>% filter(Site=="E1"|Site=="W3") %>% adonis(sqrt(.[,c(6:9)])~Site, ., perm=200)
+Tcommdf  %>% filter(Site=="W1"|Site=="W3") %>% adonis(sqrt(.[,c(6:9)])~Site, ., perm=200)
+Tcommdf  %>% filter(Site=="W3"|Site=="L1") %>% adonis(sqrt(.[,c(6:9)])~Site, ., perm=200)
+Tcommdf  %>% filter(Site=="DS11"|Site=="L1") %>% adonis(sqrt(.[,c(6:9)])~Site, ., perm=200)
+Tcommdf  %>% filter(Site=="E1"|Site=="L1") %>% adonis(sqrt(.[,c(6:9)])~Site, ., perm=200)
+Tcommdf  %>% filter(Site=="W1"|Site=="L1") %>% adonis(sqrt(.[,c(6:9)])~Site, ., perm=200)
+
+```
+
+Within each site, tile communities differed among specific years of deployment (e.g., at DS11, the community on 1-year tiles from 2015-2016 was different from 1-year tiles from 2016-2017) as well as deployment time (pairwise PERMANOVAs, p<0.05; Fig 7). Within durations, communities were also different among sites (PERMANOVA, p<0.05), except for 1-year tiles from L1 and W1. 
+
+```{r}
+
+##Permanova comm per year wn site
+
+adonis(Ts.commdf[tilesFG$Site=="DS11",]~tilesFG$S.Y[tilesFG$Site=="DS11"], Ts.commdf, perm=200) ##DS11 sig (both transformed and non transformed are sig)
+adonis(Ts.commdf[tilesFG$Site=="E1",]~tilesFG$S.Y[tilesFG$Site=="E1"], Ts.commdf, perm=200) ##E1 sig (both transformed and non transformed are sig)
+adonis(Ts.commdf[tilesFG$Site=="W1",]~tilesFG$S.Y[tilesFG$Site=="W1"], Ts.commdf, perm=200) ##W1 sig (both transformed and non transformed are sig)
+adonis(Ts.commdf[tilesFG$Site=="W3",]~tilesFG$S.Y[tilesFG$Site=="W3"], Ts.commdf, perm=200)##W3 sig (both transformed and non transformed are sig)
+
+
+###Within each year
+T1commdf <-tilesFG %>%filter(Years_out==1)#all sig
+
+T1commdf  %>% filter(Site=="DS11"|Site=="E1") %>% adonis(sqrt(.[,c(6:9)])~Site, ., perm=200)
+T1commdf  %>% filter(Site=="DS11"|Site=="W1") %>% adonis(sqrt(.[,c(6:9)])~Site, ., perm=200)
+T1commdf  %>% filter(Site=="E1"|Site=="W1") %>% adonis(sqrt(.[,c(6:9)])~Site, ., perm=200)
+T1commdf  %>% filter(Site=="DS11"|Site=="W3") %>% adonis(sqrt(.[,c(6:9)])~Site, ., perm=200)
+T1commdf  %>% filter(Site=="E1"|Site=="W3") %>% adonis(sqrt(.[,c(6:9)])~Site, ., perm=200)
+T1commdf  %>% filter(Site=="W1"|Site=="W3") %>% adonis(sqrt(.[,c(6:9)])~Site, ., perm=200)
+T1commdf  %>% filter(Site=="DS11"|Site=="L1") %>% adonis(sqrt(.[,c(6:9)])~Site, ., perm=200)
+T1commdf  %>% filter(Site=="E1"|Site=="L1") %>% adonis(sqrt(.[,c(6:9)])~Site, ., perm=200)
+T1commdf  %>% filter(Site=="W1"|Site=="L1") %>% adonis(sqrt(.[,c(6:9)])~Site, ., perm=200)
+T1commdf  %>% filter(Site=="W3"|Site=="L1") %>% adonis(sqrt(.[,c(6:9)])~Site, ., perm=200)
+#between years within sites
+T1commdf  %>% filter(Site=="DS11") %>% adonis(sqrt(.[,c(6:9)])~S.Y, ., perm=200)
+T1commdf  %>% filter(Site=="W1") %>% adonis(sqrt(.[,c(6:9)])~S.Y, ., perm=200)
+T1commdf  %>% filter(Site=="E1") %>% adonis(sqrt(.[,c(6:9)])~S.Y, ., perm=200)
+T1commdf  %>% filter(Site=="W3") %>% adonis(sqrt(.[,c(6:9)])~S.Y, ., perm=200)
+
+T2commdf <-tilesFG %>%filter(Years_out==2)#all sig
+T2commdf  %>% filter(Site=="DS11"|Site=="E1") %>% adonis(sqrt(.[,c(6:9)])~Site, ., perm=200)
+T2commdf  %>% filter(Site=="DS11"|Site=="W1") %>% adonis(sqrt(.[,c(6:9)])~Site, ., perm=200)
+T2commdf  %>% filter(Site=="E1"|Site=="W1") %>% adonis(sqrt(.[,c(6:9)])~Site, ., perm=200)
+T2commdf  %>% filter(Site=="W3"|Site=="E1") %>% adonis(sqrt(.[,c(6:9)])~Site, ., perm=200)
+T2commdf  %>% filter(Site=="W3"|Site=="W1") %>% adonis(sqrt(.[,c(6:9)])~Site, ., perm=200)
+T2commdf  %>% filter(Site=="DS11"|Site=="W3") %>% adonis(sqrt(.[,c(6:9)])~Site, ., perm=200)
+#between years within sites
+T2commdf  %>% filter(Site=="DS11") %>% adonis(sqrt(.[,c(6:9)])~S.Y, ., perm=200)
+T2commdf  %>% filter(Site=="E1") %>% adonis(sqrt(.[,c(6:9)])~S.Y, ., perm=200)
+T2commdf  %>% filter(Site=="W1") %>% adonis(sqrt(.[,c(6:9)])~S.Y, ., perm=200)
+T2commdf  %>% filter(Site=="W3") %>% adonis(sqrt(.[,c(6:9)])~S.Y, ., perm=200)
+
+```
+
+
+
+#Tiles vs Benthos
+
+To compare the benthic community to settlement tile communities, percent cover (photoquadrats) and abundance (tiles) data were transformed into proportional abundance of each functional group, then square-root transformed and a Bray-Curtis matrix was calculated for each. The trajectory of community development on the tiles was evaluated by plotting the Bray-Curtis dissimilarity to the benthic community over time at each site. 
+
+```{r}
+tile.prop<-tilesFG
+tile.prop[,c(6:9)]<-tile.prop[,c(6:9)]/tile.prop$rs #calculate raw proportion of Fuctional Groups
+tile.prop$Years_out<-as.character(tile.prop$Years_out)
+
+
+tile.prop.aves<-tile.prop%>%gather("Fxnl.Group","prop",6:9)%>%
+  group_by(Site,Years_out,Fxnl.Group)%>%
+  summarize(mprop=mean(prop, na.rm=T))
+
+tile.prop.aves$Fxnl.Group<-factor(tile.prop.aves$Fxnl.Group, levels = c("Filter","Suspension","CCA","Red algae"))
+
+```
+
+Proportional community data for benthos
+
+```{r}
+pq.prop<-commFG%>%mutate(rs=CCA+Filter+Suspension+`Red algae`+Kelp)
+pq.prop[,c(4:8)]<-pq.prop[,c(4:8)]/pq.prop$rs
+
+
+pq.prop<-pq.prop%>%gather("Fxnl.Group","mprop",4:8)%>%
+  dplyr::select(-rs)%>%mutate(Years_out=rep("Benthos"))
+
+pq.prop.aves<- pq.prop%>%
+  group_by(Site,Fxnl.Group,Years_out)%>%summarize(mprop=mean(mprop))
+```
+
+
+##Fig 5
+
+```{r}
+tp.comp<-full_join(tile.prop.aves,pq.prop.aves)
+tp.comp$Fxnl.Group<-factor(tp.comp$Fxnl.Group, levels = c("Filter","Suspension","CCA","Red algae","Kelp"))
+tp.comp$Years_out<-factor(tp.comp$Years_out, levels = c("Benthos","1","2","3"))
+tp.comp$Site<-factor(tp.comp$Site, levels=c("E1","W1","L1","W3","DS11"))
+
+fig5 <- ggplot(tp.comp, aes(Years_out, mprop,fill=Fxnl.Group))+
+  geom_col()+
+  ylab("Mean Proportion")+
+  xlab("")+
+  facet_grid(Site~.)+
+  scale_fill_manual(values=c('#0045ff', '#8078fb', '#ff7876', '#e9132e', '#ff9f00', '#ff7876', '#e9132e'))+
+  guides(fill = guide_legend(title = "Functional Group"))+
+  theme_cowplot()+
+  theme(legend.position = "top", legend.direction = "vertical", legend.key.size = unit(0.8, "line"), legend.title = element_text(size=12), legend.text = element_text(size=11))
+
+
+ggsave("proportionsfig.tiff", fig5, device="tiff",width=80, height=200, units="mm", dpi=300)
+```
+
+
+Combine benthos and tile proportional data
+Square root it
+```{r}
+pq.propdf<-spread(pq.prop,Fxnl.Group, mprop)%>%ungroup
+
+
+tp.compdf<-bind_rows(pq.propdf, tile.prop)%>%dplyr::select(-quad,-tile,-rs,-Year_dep,-S.Y,-Year)
+
+tp.compdf[is.na(tp.compdf)]<-0
+
+tp.compdf$SType<-paste(tp.compdf$Site, tp.compdf$Years_out)
+
+tp.compdf[,c(3:7)] <- sqrt(tp.compdf[,c(3:7)])
+```
+
+```{r}
+comm_NMDS=metaMDS(tp.compdf[3:7],trymax=100)
+comm_NMDS### BC matrix, sqrt transform on  functional groups
+stressplot(comm_NMDS)
+
+```
+Fig 7 a-e: NO LONGER USING
+NMDS of tiles and benthos communities (proportinal FGs, square-root transformed) by site
+```{r}
+Pal<-c("#F93E58", "#9440D5", "#Fc8d59", "#7CB02C","#408AD2")
+
+png("tile_benthos_nmds.png")
+
+par(mfrow=c(2,3))
+ordiplot(comm_NMDS,type="n")
+ordiellipse(comm_NMDS,groups=tp.compdf$SType,draw="polygon", show.groups = c("DS11 Benthos", "DS11 1", "DS11 2"),
+            col=Pal[1],label=F)
+ordiplot(comm_NMDS,type="n")
+ordiellipse(comm_NMDS,groups=tp.compdf$SType,draw="polygon", show.groups = c("E1 Benthos", "E1 1", "E1 2"),
+            col=Pal[2],label=F)
+ordiplot(comm_NMDS,type="n")
+ordiellipse(comm_NMDS,groups=tp.compdf$SType,draw="polygon", show.groups = c("L1 Benthos", "L1 1"),
+            col=Pal[3],label=F)
+ordiplot(comm_NMDS,type="n")
+ordiellipse(comm_NMDS,groups=tp.compdf$SType,draw="polygon", show.groups = c("W1 Benthos", "W1 1", "W1 2", "W1 3"),
+            col=Pal[4],label=F)
+ordiplot(comm_NMDS,type="n")
+ordiellipse(comm_NMDS,groups=tp.compdf$SType,draw="polygon", show.groups = c("W3 Benthos", "W3 1", "W3 2"),
+            col=Pal[5],label=F)
+dev.off()
+```
+
+Bray-curtis dissimilarity between benthos and tiles: do tile communities resemble the benthic community?
+```{r}
+#mean dissimilarity per comparison
+##data is already square root transformed
+DS11<-filter(tp.compdf,Site=="DS11")
+E1<-filter(tp.compdf,Site=="E1")
+L1<-filter(tp.compdf,Site=="L1")
+W1<-filter(tp.compdf,Site=="W1")
+W3<-filter(tp.compdf,Site=="W3")
+
+# per site get mean bray curtis dist between each comm type (bethic, yr1 tile, yr 2 tile)
+#also get mean and sd for dist bn yr1 tile and yr 2 tile
+braycurtis <- vegdist(DS11[,3:7])
+a<-meandist(braycurtis, DS11$Years_out)[c(9,7:8)] # mean BC dist compared to mean benthos
+b<-c(sd(as.matrix(braycurtis)[DS11$Years_out=="Benthos",DS11$Years_out=="Benthos"]),
+        sd(as.matrix(braycurtis)[DS11$Years_out=="Benthos",DS11$Years_out=="1"]),
+           sd(as.matrix(braycurtis)[DS11$Years_out=="Benthos",DS11$Years_out=="2"]))
+ds11_dist<-data.frame(dist=a, sd=b, Site=rep("DS11"), tile=0:2)
+
+braycurtis <- vegdist(E1[,3:7])
+a<-meandist(braycurtis, E1$Years_out)[c(9,7:8)]
+b<-c(sd(as.matrix(braycurtis)[E1$Years_out=="Benthos",E1$Years_out=="Benthos"]),
+     sd(as.matrix(braycurtis)[E1$Years_out=="Benthos",E1$Years_out=="1"]),
+     sd(as.matrix(braycurtis)[E1$Years_out=="Benthos",E1$Years_out=="2"]))
+e1_dist<-data.frame(dist=a, sd=b, Site=rep("E1"), tile=0:2)
+
+braycurtis <- vegdist(L1[,3:7])
+a<-meandist(braycurtis, L1$Years_out)[4:3]
+b<-c(sd(as.matrix(braycurtis)[L1$Years_out=="Benthos",L1$Years_out=="Benthos"]),
+     sd(as.matrix(braycurtis)[L1$Years_out=="Benthos",L1$Years_out=="1"]))
+l1_dist<-data.frame(dist=a, sd=b, Site="L1", tile=0:1)
+
+braycurtis <- vegdist(W1[,3:7])
+a<-meandist(braycurtis, W1$Years_out)[c(16,13:15)]
+b<-c(sd(as.matrix(braycurtis)[W1$Years_out=="Benthos",W1$Years_out=="Benthos"]),
+     sd(as.matrix(braycurtis)[W1$Years_out=="Benthos",W1$Years_out=="1"]),
+     sd(as.matrix(braycurtis)[W1$Years_out=="Benthos",W1$Years_out=="2"]),
+     sd(as.matrix(braycurtis)[W1$Years_out=="Benthos",W1$Years_out=="3"]))
+w1_dist<-data.frame(dist=a, sd=b, Site=rep("W1"), tile=0:3)
+
+braycurtis <- vegdist(W3[,3:7])
+a<-meandist(braycurtis, W3$Years_out)[c(9,7:8)]
+b<-c(sd(as.matrix(braycurtis)[W3$Years_out=="Benthos",W3$Years_out=="Benthos"]),
+     sd(as.matrix(braycurtis)[W3$Years_out=="Benthos",W3$Years_out=="1"]),
+     sd(as.matrix(braycurtis)[W3$Years_out=="Benthos",W3$Years_out=="2"]))
+w3_dist<-data.frame(dist=a, sd=b, Site=rep("W3"), tile=0:2)
+
+dists<-bind_rows(ds11_dist,e1_dist,l1_dist,w1_dist,w3_dist)
+
+
+```
+
+##Fig 7:do tile communities resemble the benthic community?
+
+```{r}
+Pal<-c("#F93E58", "#9440D5", "#Fc8d59", "#7CB02C","#408AD2")
+dists$tile <- as.character(dists$tile)
+dists$tile[dists$tile=="0"] <- "Benthos"
+dists$tile <- factor(dists$tile, levels=c("Benthos", "1","2","3"))
+
+fig7 <- ggplot(dists, aes(Site,dist, group=tile))+
+  #geom_point(aes(color=Site, shape=tile), position=position_dodge(width=0.5))+
+  geom_pointrange(aes(ymax=dist+sd,ymin=dist-sd,color=Site), position=position_dodge(width=0.5), size=0.5)+
+  geom_text(aes(label=tile), size=3, fontface="bold",
+            nudge_y = -.07, 
+            nudge_x=c(-0.2,0.05,0.25,
+                      -0.2,0.05,0.25,
+                      -0.1,0.2,
+                      -0.2,0,0.12,0.25,
+                      -0.2,0.05,0.25))+
+  #geom_line(aes(color=Site))+
+  scale_color_manual(values=Pal)+
+  ylab("mean BC dissimilarity")+
+  xlab("Site")+
+  theme_cowplot(font_size=12)+
+  theme(legend.position="none")
+
+
+ggsave("BCdissimilarity.png", fig7, device=png(),width=85, height=50, units="mm",scale=1.2,dpi=300)
+```
+
+  
+
+#Session Info
+
+R version 3.6.1 (2019-07-05)
+Platform: x86_64-w64-mingw32/x64 (64-bit)
+Running under: Windows >= 8 x64 (build 9200)
+
+Matrix products: default
+
+locale:
+[1] LC_COLLATE=English_United States.1252  LC_CTYPE=English_United States.1252    LC_MONETARY=English_United States.1252 LC_NUMERIC=C                          
+[5] LC_TIME=English_United States.1252    
+
+attached base packages:
+[1] stats     graphics  grDevices utils     datasets  methods   base     
+
+other attached packages:
+ [1] car_3.0-3       carData_3.0-2   vegan_2.5-6     lattice_0.20-38 permute_0.9-5   cowplot_1.0.0   corrplot_0.84   sjPlot_2.8.4    lubridate_1.7.4
+[10] forcats_0.4.0   stringr_1.4.0   dplyr_0.8.3     purrr_0.3.2     readr_1.3.1     tidyr_1.0.0     tibble_2.1.3    ggplot2_3.2.1   tidyverse_1.2.1
+
+loaded via a namespace (and not attached):
+ [1] httr_1.4.1        jsonlite_1.6      splines_3.6.1     modelr_0.1.5      assertthat_0.2.1  cellranger_1.1.0  yaml_2.2.0        bayestestR_0.7.0 
+ [9] pillar_1.4.2      backports_1.1.5   glue_1.3.1        rvest_0.3.4       minqa_1.2.4       colorspace_1.4-1  sandwich_2.5-1    Matrix_1.2-17    
+[17] pkgconfig_2.0.3   broom_0.5.2       haven_2.1.1       xtable_1.8-4      mvtnorm_1.0-11    scales_1.0.0      openxlsx_4.1.0.1  rio_0.5.16       
+[25] lme4_1.1-21       emmeans_1.4.1     mgcv_1.8-29       generics_0.0.2    sjlabelled_1.1.5  ellipsis_0.3.0    TH.data_1.0-10    withr_2.1.2      
+[33] lazyeval_0.2.2    cli_1.1.0         survival_2.44-1.1 magrittr_1.5      crayon_1.3.4      effectsize_0.3.1  readxl_1.3.1      estimability_1.3 
+[41] nlme_3.1-141      MASS_7.3-51.4     foreign_0.8-72    xml2_1.2.2        data.table_1.12.4 tools_3.6.1       hms_0.5.1         lifecycle_0.1.0  
+[49] multcomp_1.4-10   munsell_0.5.0     zip_2.0.4         cluster_2.1.0     ggeffects_0.15.0  compiler_3.6.1    rlang_0.4.0       grid_3.6.1       
+[57] nloptr_1.2.1      parameters_0.8.0  rstudioapi_0.10   boot_1.3-23       gtable_0.3.0      codetools_0.2-16  abind_1.4-5       curl_4.2         
+[65] sjstats_0.18.0    sjmisc_2.8.5      R6_2.4.0          zoo_1.8-6         knitr_1.25        performance_0.4.7 zeallot_0.1.0     insight_0.8.5    
+[73] stringi_1.4.3     parallel_3.6.1    Rcpp_1.0.2        vctrs_0.2.0       tidyselect_0.2.5  xfun_0.10         coda_0.19-3   

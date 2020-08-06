@@ -1,0 +1,95 @@
+---
+title: "Create Daily Env timeseries"
+author: "Christina Bonsell"
+date: "July 3, 2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(lubridate)
+```
+
+Read in data
+```{r}
+currents <- read_csv("repository data/BoulderPatchCurrents.csv")#doi:10.18739/A2ZS2KD7B
+PAR <- read_csv("repository data/BoulderPatchPARunderwater_1984to2018.csv")#doi:10.18739/A23J3922B
+tempsal <- read_csv("repository data/BoulderPatchTempCondSal_2011to2018.csv")#doi:10.18739/A2ZS2KD7B
+tempsal$salinity[tempsal$salinity==-9999] <- NA #set missing to NA
+                     
+```
+
+Currents
+```{r}
+daily_currents <- currents %>% mutate(Day=as.Date(Datetime)) %>% 
+  filter(flag=="VALID") %>% 
+  group_by(Station, Day, Instrument, Deployment) %>% 
+  summarize(m_Speed=round(mean(Speed_cm_s), 1)) %>% 
+  mutate(Year=year(Day),Month=month(Day)) %>% ungroup()
+
+
+daily_currents$Season<-ifelse(daily_currents$Month<5
+                              |daily_currents$Month>11, "Winter","Summer")
+```
+
+irrandiance (PAR)
+
+```{r}
+daily_PAR <- PAR %>% mutate(Day=as.Date(Date, format="%m/%d/%Y %H:%M")) %>% 
+  group_by(Site, Day) %>% 
+  summarize(sumPAR=sum(PAR_umoles_m2_s, na.rm=T), counts=n())%>%
+  mutate(Year=year(Day),Month=month(Day)) %>% 
+  filter(counts>=8, Year>2011) %>% ungroup()
+
+m<-60*60*24*(10^-6)
+daily_PAR$PAR_perday<-m*daily_PAR$sumPAR/daily_PAR$counts
+
+
+daily_PAR$Season<-ifelse(daily_PAR$Month<5
+                              |daily_PAR$Month>11, "Winter","Summer")
+```
+
+temperature and salinity
+
+```{r}
+tempsal$conductivity[tempsal$flag_condsal!="VALID"] <- NA
+tempsal$salinity[tempsal$flag_condsal!="VALID"] <- NA
+
+daily_tempsal <- tempsal %>% mutate(Day=as.Date(date_time)) %>% 
+  group_by(station, Day) %>% 
+  summarize(mTemp=mean(temperature, na.rm=T),
+            mSal=mean(salinity, na.rm=T),
+            mTemp.rd=round(mean(temperature, na.rm=T), 1),
+            mSal.rd=round(mean(salinity, na.rm=T))) %>% 
+  mutate(Year=year(Day),Month=month(Day))  %>% ungroup()
+
+daily_tempsal_pre2017 <-daily_tempsal %>% 
+  filter(station=="DS11"&Day<"2017-07-26"|
+           station=="E1"&Day<"2017-07-30"|
+           station=="L1"&Day<"2017-07-30"|
+           station=="W1"&Day<"2017-07-31"|
+           station=="W3"&Day<"2017-07-26")#keep to deployments before 2017-2018
+
+  
+daily_tempsal_pre2017$Season<-ifelse(daily_tempsal_pre2017$Month<5
+                              |daily_tempsal_pre2017$Month>11, "Winter","Summer")
+
+```
+
+```{r}
+
+timeseries <- full_join(daily_currents, daily_PAR, by=c("Day", "Year", "Month", "Season", "Station"="Site")) %>% 
+  full_join(daily_tempsal_pre2017, by = c("Day", "Year", "Month", "Station"="station")) %>% 
+  select("Site"=Station, Day, Month, m_Speed, PAR_perday, mTemp, mSal) %>% 
+  arrange(Site, Day)
+
+timeseries$Season<-ifelse(timeseries$Month<5
+                              |timeseries$Month>11, "Winter","Summer")
+
+#write_csv(timeseries,"AllEnvDaily_QAQC.csv", row.names=F)
+```
+
